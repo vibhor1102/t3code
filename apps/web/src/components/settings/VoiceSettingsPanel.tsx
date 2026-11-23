@@ -153,6 +153,7 @@ import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 const OFF = "off";
 const DEVICE = "device";
 function CloudSpeechLogo({ provider }: { provider: CloudSpeechProvider }) {
+  if (provider === "gemini") return <AudioLinesIcon aria-hidden className="size-4 shrink-0" />;
   if (provider === "openrouter")
     return <ProviderPackageIcon icon={openRouterIcon} aria-hidden className="size-4 shrink-0" />;
   return (
@@ -1346,6 +1347,8 @@ export function VoiceSettingsPanel() {
   const settings = useClientSettings();
   const settingsScope = useOptionalSettingsScope();
   const destination = useVoiceTranscriptionDestination();
+  const geminiSmart =
+    destination.cloudProvider === "gemini" && settings.speechGeminiMode === "smart";
   const appleSpeechLocales = useAppleSpeechLocales();
   const appleSpeechLanguages =
     !appleSpeechLocales.includes(settings.speechLanguage) &&
@@ -1405,11 +1408,17 @@ export function VoiceSettingsPanel() {
     )
     .map((environment) => ({
       environment,
-      choices: CloudSpeechProvider.literals.map((provider) => ({
-        environment,
-        provider,
-        value: JSON.stringify(["cloud", environment.environmentId, provider]),
-      })),
+      choices: CloudSpeechProvider.literals
+        .filter(
+          (provider) =>
+            provider !== "gemini" ||
+            environment.serverConfig?.environment.capabilities.geminiVoiceTranscription,
+        )
+        .map((provider) => ({
+          environment,
+          provider,
+          value: JSON.stringify(["cloud", environment.environmentId, provider]),
+        })),
     }));
   const cloudChoices = cloudGroups.flatMap((group) => group.choices);
   const destinationValue = destination.device
@@ -1698,6 +1707,37 @@ export function VoiceSettingsPanel() {
             close={() => setPendingCloud(null)}
           />
         )}
+        {destination.cloudProvider === "gemini" && (
+          <SettingsRow
+            title={gt("Gemini transcription mode")}
+            description={gt(
+              "Smart formats the transcript and applies spoken corrections in the same request. Verbatim preserves spoken words and fillers.",
+            )}
+            control={
+              <Select
+                value={settings.speechGeminiMode}
+                onValueChange={(value) => {
+                  if (value === "verbatim" || value === "smart")
+                    void updateClientSettings({ speechGeminiMode: value });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label={gt("Gemini transcription mode")}>
+                  <SelectValue>
+                    {settings.speechGeminiMode === "smart" ? gt("Smart") : gt("Verbatim")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem value="verbatim">
+                    <T>Verbatim</T>
+                  </SelectItem>
+                  <SelectItem value="smart">
+                    <T>Smart</T>
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+        )}
         {!destination.cloudProvider && !destination.device && catalog.loading ? (
           <SettingsRow
             title={gt("Language")}
@@ -1830,18 +1870,23 @@ export function VoiceSettingsPanel() {
       <SettingsSection id={setting("speech-post-processing").id} title={gt("Cleanup")}>
         <SettingsRow
           title={gt("Clean up transcripts")}
-          description={gt(
-            "Off by default. Sends the transcript and nearby draft text, never audio, to the cleanup model.",
-          )}
+          description={
+            geminiSmart
+              ? gt("Gemini Smart already cleans up the recording in one request.")
+              : gt(
+                  "Off by default. Sends the transcript and nearby draft text, never audio, to the cleanup model.",
+                )
+          }
           control={
             <Switch
               aria-label={gt("Clean up transcripts")}
-              checked={cleanupEnabled}
+              checked={cleanupEnabled && !geminiSmart}
+              disabled={geminiSmart}
               onCheckedChange={chooseTranscriptCleanup}
             />
           }
         />
-        {cleanupEnabled ? (
+        {cleanupEnabled && !geminiSmart ? (
           <SettingsRow
             title={gt("Instructions")}
             description={

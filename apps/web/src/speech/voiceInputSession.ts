@@ -144,7 +144,8 @@ export class VoiceInputSession {
         const context = this.target?.readContext();
         if (!context) throw new Error(m(msg("Voice input has no draft to record into.")));
         const settings = context.clientSettings;
-        const cleanupGrant = context.cleanup ? readCleanupGrant() : null;
+        const geminiMode = key.cloudProvider === "gemini" ? settings.speechGeminiMode : undefined;
+        const cleanupGrant = context.cleanup && geminiMode !== "smart" ? readCleanupGrant() : null;
         const cleanupEnabled = cleanupGrant !== null;
         const cue = cleanupEnabled && context.cleanupPrepared ? settings.speechCorrectionWord : "";
         const { speechCustomWords, speechHints } = resolveSpeechVocabulary({
@@ -169,6 +170,7 @@ export class VoiceInputSession {
           speechCustomWords,
           ...(speechHints.length > 0 ? { speechHints } : {}),
           speechRemoveFillerWords: settings.speechRemoveFillerWords,
+          ...(geminiMode ? { speechGeminiMode: geminiMode } : {}),
           ...(cue.trim() ? { speechCorrectionWord: cue } : {}),
           speechSilenceFiltering: settings.speechSilenceFiltering,
         };

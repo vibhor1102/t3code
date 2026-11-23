@@ -286,6 +286,11 @@ function CloudChoices({ environment, active, onClose }: Props & { onClose: () =>
         </ListSection>
       );
     const saved = keys.value;
+    const providers = CloudSpeechProvider.literals.filter(
+      (provider) =>
+        provider !== "gemini" ||
+        environment.serverConfig?.environment.capabilities.geminiVoiceTranscription,
+    );
     if (!editing)
       return (
         <ListSection
@@ -293,7 +298,7 @@ function CloudChoices({ environment, active, onClose }: Props & { onClose: () =>
             environment: environment.label,
           })}
         >
-          {CloudSpeechProvider.literals.map((provider, index) => {
+          {providers.map((provider, index) => {
             const label = CLOUD_SPEECH_LABELS[provider];
             const routed = provider === "openrouter";
             const key = saved[provider];

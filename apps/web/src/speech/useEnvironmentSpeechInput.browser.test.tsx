@@ -848,6 +848,27 @@ it("sends audio to OpenRouter only under a device grant naming the exact model",
   expect(mocks.statusRequests).toEqual([]);
 });
 
+it.each(["verbatim", "smart"] as const)(
+  "passes Gemini %s mode and skips the separate cleanup only in Smart mode",
+  async (mode) => {
+    setup();
+    mocks.cloudVoiceCapable.add("env-b");
+    chooseAudioDestination({
+      kind: "cloud",
+      environmentId: EnvironmentId.make("env-b"),
+      provider: "gemini",
+    });
+    chooseTranscriptCleanup(true);
+    mocks.settings.speechGeminiMode = mode;
+    await using _screen = await render(<Probe />);
+    await act(() => mocks.voice.start());
+    await act(() => mocks.voice.stop());
+    expect(mocks.transcribeCalls).toEqual(["gemini via env-b"]);
+    expect(mocks.recordingOptions.at(-1)?.speechGeminiMode).toBe(mode);
+    expect(mocks.cleanupCalls).toHaveLength(mode === "smart" ? 0 : 1);
+  },
+);
+
 it("uses neither destination when the cloud save marker cannot be read", async () => {
   setup({ destination: "env-a" });
   const key = "t3code:voice-audio-grant:v1";

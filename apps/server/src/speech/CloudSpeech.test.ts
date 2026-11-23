@@ -52,7 +52,12 @@ it.effect.each(["openai", "xai"] as const)("sends only to %s using its own saved
     yield* service.setKey(provider === "openai" ? "xai" : "openai", Redacted.make("other"));
     expect((yield* Effect.flip(transcribe()))._tag).toBe("CloudSpeechError");
     yield* service.setKey(provider, Redacted.make("chosen"));
-    expect(yield* service.configured).toEqual({ openai: true, xai: true, openrouter: false });
+    expect(yield* service.configured).toEqual({
+      openai: true,
+      xai: true,
+      openrouter: false,
+      gemini: false,
+    });
     yield* Effect.flip(transcribe(new Uint8Array(3)));
     expect(upstream).not.toHaveBeenCalled();
     expect(yield* transcribe()).toBe("hello");
@@ -100,6 +105,85 @@ it.effect.each(["openai", "xai"] as const)("sends only to %s using its own saved
       reason: "unreadable-key",
     });
     expect(upstream).toHaveBeenCalledTimes(3);
+  }),
+);
+
+it.effect("uses Gemini inline audio and returns only completed model output", () =>
+  Effect.gen(function* () {
+    const upstream = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        status: "completed",
+        steps: [
+          { type: "thought", content: [{ type: "text", text: "Private reasoning" }] },
+          { type: "model_output", content: [{ type: "text", text: "Use T3 Code. " }] },
+          { type: "model_output", content: [{ type: "text", text: "Keep the draft." }] },
+        ],
+      }),
+    );
+    const service = yield* CloudSpeech.CloudSpeech.pipe(
+      Effect.provide(
+        CloudSpeech.layer.pipe(
+          Layer.provide(FetchHttpClient.layer),
+          Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
+          Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
+        ),
+      ),
+    );
+    yield* service.setKey("gemini", Redacted.make("gemini-test-key"));
+    const pcm = new Uint8Array(new Float32Array([0, 0.5]).buffer);
+    const transcribe = (mode: "verbatim" | "smart") =>
+      service
+        .transcribe("gemini", pcm, {
+          ...DEFAULT_SPEECH_TRANSCRIPTION_OPTIONS,
+          speechLanguage: "en",
+          speechGeminiMode: mode,
+          speechHints: ["T3 Code"],
+        })
+        .pipe(Effect.provideService(FetchHttpClient.Fetch, upstream));
+
+    expect(yield* transcribe("smart")).toBe("Use T3 Code. Keep the draft.");
+    const [url, init] = upstream.mock.calls[0]!;
+    expect(String(url)).toBe("https://generativelanguage.googleapis.com/v1beta/interactions");
+    expect(new Headers(init?.headers).get("x-goog-api-key")).toBe("gemini-test-key");
+    expect(new Headers(init?.headers).has("authorization")).toBe(false);
+    expect(init?.redirect).toBe("error");
+    const request = JSON.parse(String(init?.body));
+    expect(request).toMatchObject({
+      model: "models/gemini-3.5-transcribe",
+      store: false,
+      input: [{ type: "audio", mime_type: "audio/wav" }],
+      generation_config: {
+        transcription_config: {
+          mode: "smart",
+          language_codes: ["en-US"],
+          custom_vocabulary: ["T3 Code"],
+        },
+      },
+    });
+    expect(Buffer.from(request.input[0].data, "base64").subarray(0, 4).toString()).toBe("RIFF");
+
+    upstream.mockResolvedValueOnce(
+      Response.json({
+        status: "completed",
+        steps: [{ type: "model_output", content: [{ type: "text", text: "Um, yes." }] }],
+      }),
+    );
+    expect(yield* transcribe("verbatim")).toBe("Um, yes.");
+    upstream.mockResolvedValueOnce(
+      Response.json({
+        status: "failed",
+        steps: [{ type: "model_output", content: [{ type: "text", text: "Partial" }] }],
+      }),
+    );
+    expect(yield* Effect.flip(transcribe("smart"))).toMatchObject({
+      provider: "gemini",
+      reason: "unavailable",
+    });
+    upstream.mockResolvedValueOnce(new Response(null, { status: 429 }));
+    expect(yield* Effect.flip(transcribe("smart"))).toMatchObject({
+      provider: "gemini",
+      reason: "rate-limit",
+    });
   }),
 );
 

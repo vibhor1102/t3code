@@ -8,23 +8,26 @@ export const CloudSpeechApiKey = TrimmedNonEmptyString.check(
   Schema.isPattern(/^(?![a-z][a-z\d+.-]*:\/\/)[!-~]+$/i),
 );
 
-export const CloudSpeechProvider = Schema.Literals(["openai", "xai", "openrouter"]);
+export const CloudSpeechProvider = Schema.Literals(["openai", "xai", "openrouter", "gemini"]);
 export type CloudSpeechProvider = typeof CloudSpeechProvider.Type;
 export const CLOUD_SPEECH_LABELS = {
   openai: "OpenAI",
   xai: "Grok Voice Transcribe",
   openrouter: "OpenRouter",
+  gemini: "Gemini 3.5 Transcribe",
 } as const;
 export const CLOUD_SPEECH_PROVIDER_NAMES = {
   openai: "OpenAI",
   xai: "xAI",
   openrouter: "OpenRouter",
+  gemini: "Google",
 } as const;
-/** Servers that predate OpenRouter report only the first two providers. */
+/** Older environments omit providers added after their release. */
 export const CloudSpeechKeys = Schema.Struct({
   openai: Schema.Boolean,
   xai: Schema.Boolean,
   openrouter: Schema.optionalKey(Schema.Boolean),
+  gemini: Schema.optionalKey(Schema.Boolean),
 });
 export type CloudSpeechKeys = typeof CloudSpeechKeys.Type;
 
@@ -288,6 +291,8 @@ export type SpeechPostProcessingPromptSettings = typeof SpeechPostProcessingProm
 /** A word the person says to flag a spoken correction, such as "sorry" or "err". */
 export const SpeechCorrectionCue = Schema.String.check(Schema.isMaxLength(50));
 
+export const SpeechGeminiMode = Schema.Literals(["verbatim", "smart"]);
+
 /** Recognition preferences that travel with every recording. */
 export const SpeechTranscriptionOptions = Schema.Struct({
   speechLanguage: SpeechLanguage,
@@ -296,6 +301,7 @@ export const SpeechTranscriptionOptions = Schema.Struct({
   /** Recognition-only terms, such as the project name; never rewrite the transcript. */
   speechHints: Schema.optionalKey(Schema.Array(SpeechCustomWord).check(Schema.isMaxLength(8))),
   speechRemoveFillerWords: Schema.Boolean,
+  speechGeminiMode: Schema.optionalKey(SpeechGeminiMode),
   /** Preserve this cue for separately consented transcript cleanup. */
   speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
   speechSilenceFiltering: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),

@@ -59,6 +59,7 @@ import {
   SpeechAcceleration,
   SpeechCorrectionCue,
   SpeechCustomWords,
+  SpeechGeminiMode,
   SpeechLanguage,
   SpeechModelUnloadTimeout,
   SpeechPostProcessingPromptSettings,
@@ -402,7 +403,7 @@ export const VoiceTranscriptionDestination = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("cloud"),
     environmentId: EnvironmentId,
-    provider: Schema.Literals(["openai", "xai"]),
+    provider: Schema.Literals(["openai", "xai", "gemini"]),
   }),
   Schema.Struct({
     kind: Schema.Literal("cloud"),
@@ -592,6 +593,9 @@ export const ClientSettingsSchema = Schema.Struct({
   speechSilenceFiltering: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   speechStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   speechRemoveFillerWords: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  speechGeminiMode: SpeechGeminiMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed("verbatim" as const)),
+  ),
   speechPostProcessingPrompt: SpeechPostProcessingPromptSettings.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({ mode: "default" as const, customInstructions: "" }),
@@ -1405,6 +1409,7 @@ export const CloudSpeechCredentials = Schema.Struct({
   openai: CloudSpeechCredential,
   xai: CloudSpeechCredential,
   openrouter: CloudSpeechCredential,
+  gemini: CloudSpeechCredential,
 });
 
 export const ServerSettings = Schema.Struct({
@@ -1446,7 +1451,7 @@ export const ServerSettings = Schema.Struct({
   /** Lets clients reach this machine's loopback ports over `/api/preview/tunnel`. */
   enablePreviewTunnel: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   cloudSpeechCredentials: CloudSpeechCredentials.pipe(
-    Schema.withDecodingDefault(Effect.succeed({ openai: "", xai: "", openrouter: "" })),
+    Schema.withDecodingDefault(Effect.succeed({ openai: "", xai: "", openrouter: "", gemini: "" })),
   ),
   speechModelId: Schema.String.pipe(
     Schema.withDecodingDefault(Effect.succeed("handy-computer/parakeet-unified-en-0.6b-gguf")),
@@ -1920,6 +1925,7 @@ export const ServerSettingsPatch = Schema.Struct({
       openai: Schema.optionalKey(SettingsSecretValue),
       xai: Schema.optionalKey(SettingsSecretValue),
       openrouter: Schema.optionalKey(SettingsSecretValue),
+      gemini: Schema.optionalKey(SettingsSecretValue),
     }),
   ),
   speechModelId: Schema.optionalKey(Schema.String),
@@ -2200,6 +2206,7 @@ export const ClientSettingsPatch = Schema.Struct({
   speechSilenceFiltering: Schema.optionalKey(Schema.Boolean),
   speechStreaming: Schema.optionalKey(Schema.Boolean),
   speechRemoveFillerWords: Schema.optionalKey(Schema.Boolean),
+  speechGeminiMode: Schema.optionalKey(SpeechGeminiMode),
   speechPostProcessingPrompt: Schema.optionalKey(SpeechPostProcessingPromptSettings),
   speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
   language: Schema.optionalKey(Schema.String),
