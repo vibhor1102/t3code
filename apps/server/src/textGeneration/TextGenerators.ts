@@ -102,7 +102,20 @@ export const make = Effect.gen(function* () {
               cause: error,
             }),
         ),
-        Effect.flatMap((text) => TextGenerationOperations.decodeJsonReply(request, label, text)),
+        Effect.flatMap((text) => {
+          const decoded = TextGenerationOperations.decodeJsonReply(request, label, text);
+          if (request.operation !== "generateTranscriptionPostProcessing") return decoded;
+          // The voice cleanup prompt asks for the transcript as plain text.
+          return decoded.pipe(
+            Effect.catch(() =>
+              TextGenerationOperations.decodeJsonReply(
+                request,
+                label,
+                JSON.stringify({ transcription: text }),
+              ),
+            ),
+          );
+        }),
       );
     };
 
