@@ -15,6 +15,11 @@ permissions:
 env:
   UPSTREAM_REPO: pingdotgg/t3code
   FIRST_PUBLISHED_AT: "2026-11-23T02:49:26Z"
+  FORK_PATCH_BRANCH: fork/patches
+  FORK_PATCH_BASE: 2808e878de91aacc7fb82887f18414976be7ae34
+  # Upstream ran 5125 without publishing a release. Use that slot for the first Gemini build.
+  GEMINI_BOOTSTRAP_SOURCE: v0.1.12-nightly.20261123.5124
+  GEMINI_BOOTSTRAP_TAG: v0.1.12-nightly.20261123.5125
   NIGHTLY_PATTERN: '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
 
 jobs:
@@ -45,8 +50,9 @@ jobs:
             ' <<< "$releases" > /dev/null; then
               break
             fi
-          done | jq -cs --slurpfile published "$RUNNER_TEMP/published.json" '
-            map(select(.tag as $tag | $published[0] | index($tag) | not))
+          done | jq -cs --slurpfile published "$RUNNER_TEMP/published.json" --arg bootstrap "$GEMINI_BOOTSTRAP_TAG" '
+            . + [{tag: $bootstrap, published: "2026-11-23T03:19:01Z"}]
+            | map(select(.tag as $tag | $published[0] | index($tag) | not))
             | unique_by(.tag) | sort_by(.published) | reverse | .[:12] | map(.tag)
           ' > "$RUNNER_TEMP/tags.json"
           echo "tags=$(cat "$RUNNER_TEMP/tags.json")" >> "$GITHUB_OUTPUT"
@@ -75,12 +81,35 @@ jobs:
           [[ "$RELEASE_TAG" =~ $NIGHTLY_PATTERN ]]
           git init .
           git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
-          git fetch --no-tags --depth=1 upstream "refs/tags/$RELEASE_TAG"
+          source_tag="$RELEASE_TAG"
+          if [[ "$RELEASE_TAG" == "$GEMINI_BOOTSTRAP_TAG" ]]; then
+            source_tag="$GEMINI_BOOTSTRAP_SOURCE"
+          fi
+          git fetch --no-tags --depth=1 upstream "refs/tags/$source_tag"
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git checkout --detach FETCH_HEAD
+          {
+            echo "UPSTREAM_TAG=$source_tag"
+            echo "UPSTREAM_COMMIT=$(git rev-parse HEAD)"
+          } >> "$GITHUB_ENV"
           # Read only the public Connect configuration documented for source builds.
           sed -nE '/^T3CODE_(CLERK_PUBLISHABLE_KEY|CLERK_JWT_TEMPLATE|CLERK_CLI_OAUTH_CLIENT_ID|RELAY_URL)=/p' \
             .env.example >> "$GITHUB_ENV"
+
+      - name: Replay the fork commits onto the release
+        run: |
+          set -euo pipefail
+          git remote add fork "https://github.com/$GITHUB_REPOSITORY.git"
+          git config remote.fork.promisor true
+          git config remote.fork.partialCloneFilter blob:none
+          git fetch --no-tags --filter=blob:none fork "refs/heads/$FORK_PATCH_BRANCH"
+          patch_head=$(git rev-parse FETCH_HEAD)
+          git merge-base --is-ancestor "$FORK_PATCH_BASE" "$patch_head"
+          test -z "$(git rev-list --merges "$FORK_PATCH_BASE..$patch_head")"
+          test "$FORK_PATCH_BASE" != "$patch_head"
+          git -c user.name="T3 Fork Nightly" -c user.email="actions@users.noreply.github.com" \
+            cherry-pick --empty=drop "$FORK_PATCH_BASE..$patch_head"
+          echo "FORK_PATCH_COMMIT=$patch_head" >> "$GITHUB_ENV"
 
       - name: Set up workspace dependencies
         uses: ./.github/actions/setup-ci-deps
@@ -143,10 +172,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh api "repos/$UPSTREAM_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/upstream-release.json"
-          jq -je 'select(.prerelease and (.draft | not)) | .body' "$RUNNER_TEMP/upstream-release.json" \
-            > "$RUNNER_TEMP/notes.md"
+          gh api "repos/$UPSTREAM_REPO/releases/tags/$UPSTREAM_TAG" > "$RUNNER_TEMP/upstream-release.json"
           title=$(jq -er '.name' "$RUNNER_TEMP/upstream-release.json")
+          if [[ "$RELEASE_TAG" == "$GEMINI_BOOTSTRAP_TAG" ]]; then
+            title="T3 Code Nightly ${RELEASE_TAG#v} · Gemini dictation"
+            printf '%s\n\n' '- **Gemini 3.5 Transcribe.** Choose it in Settings → Voice. Smart mode transcribes and cleans up in one request; Verbatim preserves spoken words and fillers.' \
+              > "$RUNNER_TEMP/notes.md"
+          fi
+          jq -je 'select(.prerelease and (.draft | not)) | .body' "$RUNNER_TEMP/upstream-release.json" \
+            >> "$RUNNER_TEMP/notes.md"
 
           # A cancelled upload can leave a draft. Retry that draft, but never replace a published build.
           if release=$(gh release view "$RELEASE_TAG" --json isDraft); then
@@ -158,8 +192,9 @@ jobs:
             gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --prerelease --latest=false \
               --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
           fi
-          jq -n --arg repository "$UPSTREAM_REPO" --arg tag "$RELEASE_TAG" \
-            --arg commit "$(git rev-parse HEAD)" '{repository: $repository, tag: $tag, commit: $commit}' \
+          jq -n --arg repository "$UPSTREAM_REPO" --arg tag "$UPSTREAM_TAG" --arg commit "$UPSTREAM_COMMIT" \
+            --arg forkBranch "$FORK_PATCH_BRANCH" --arg forkBase "$FORK_PATCH_BASE" --arg forkCommit "$FORK_PATCH_COMMIT" \
+            '{repository: $repository, tag: $tag, commit: $commit, forkBranch: $forkBranch, forkBase: $forkBase, forkCommit: $forkCommit}' \
             > "$RUNNER_TEMP/upstream-source.json"
           gh release upload "$RELEASE_TAG" release/T3-Code-Nightly-x86_64.AppImage release/nightly-linux.yml \
             "$RUNNER_TEMP/upstream-source.json" --clobber
