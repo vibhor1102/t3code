@@ -31,8 +31,8 @@ recording in a language can take longer while macOS downloads its speech model.
 filler-word removal are not available; the dictionary applies only when transcript
 cleanup is on.
 
-For cloud dictation, choose **OpenAI** or **Grok Voice Transcribe** via the environment
-you want to use. If it needs a key, enter one and choose **Save and enable**.
+For cloud dictation, choose **OpenAI**, **Grok Voice Transcribe**, or
+**Gemini 3.5 Transcribe** via the environment you want to use. If it needs a key, enter one and choose **Save and enable**.
 You can also choose a [secret provider](secrets.md) instead of **Value** and enter a
 reference. Unlock the vault on that environment before dictating. Anyone with
 dictation access to the environment can use the key, but only this device opts in.
@@ -42,6 +42,12 @@ the selected provider, which bills its API account. No local model download or c
 subscription is needed. Switch back to **This device** on mobile or **Off** on
 web and desktop to stop sharing. Removing the key stops that provider for everyone
 on the environment.
+
+**Gemini 3.5 Transcribe** uses a Gemini API key. In web and desktop settings,
+**Verbatim** preserves spoken words and fillers. **Smart** formats the transcript
+and applies spoken corrections in the same request. While Smart is selected,
+T3 Code skips its separate cleanup model. Google may use free-tier recordings and
+transcripts to improve its products.
 
 **OpenRouter** works the same way but has no default model: pick one from its live
 speech-to-text catalog when you enable it, or later under **Manage OpenRouter**.

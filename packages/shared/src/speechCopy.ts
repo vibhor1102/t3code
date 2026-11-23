@@ -8,6 +8,13 @@ export function cloudSpeechDisclosure(
   environment: string,
   resolve: MFunctionType = mFallback,
 ) {
+  if (provider === "gemini")
+    return resolve(
+      msg(
+        "After you stop, {environment} sends the recording and vocabulary hints to Google. Google may use free-tier recordings and transcripts to improve its products.",
+        { environment },
+      ),
+    );
   return provider === "openrouter"
     ? resolve(
         msg(

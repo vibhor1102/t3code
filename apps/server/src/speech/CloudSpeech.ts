@@ -31,6 +31,7 @@ const endpoints = {
   openai: { url: "https://api.openai.com/v1/audio/transcriptions", model: "gpt-transcribe" },
   xai: { url: "https://api.x.ai/v1/stt", model: "grok-voice-transcribe-2.0" },
   openrouter: { url: "https://openrouter.ai/api/v1/audio/transcriptions" },
+  gemini: { url: "https://generativelanguage.googleapis.com/v1beta/interactions" },
 };
 const OPENROUTER_CATALOG_URL =
   "https://openrouter.ai/api/v1/models?output_modalities=transcription&zdr=true";
@@ -39,6 +40,23 @@ const isModelId = Schema.is(CloudSpeechModelId);
 const sameCredential = Schema.toEquivalence(SettingsSecretValue);
 const OpenRouterCatalog = Schema.Struct({
   data: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.optionalKey(Schema.String) })),
+});
+
+const GeminiTranscript = Schema.Struct({
+  status: Schema.Literal("completed"),
+  steps: Schema.Array(
+    Schema.Struct({
+      type: Schema.String,
+      content: Schema.optionalKey(
+        Schema.Array(
+          Schema.Struct({
+            type: Schema.String,
+            text: Schema.optionalKey(Schema.String),
+          }),
+        ),
+      ),
+    }),
+  ),
 });
 
 function wave(samples: Float32Array) {
@@ -104,6 +122,25 @@ function openRouterBody(model: string, audio: ArrayBuffer, language: string) {
   });
 }
 
+function geminiBody(audio: ArrayBuffer, language: string, options: SpeechTranscriptionOptions) {
+  const locale = language === "auto" ? null : new Intl.Locale(language).maximize();
+  return HttpClientRequest.bodyJsonUnsafe({
+    model: "models/gemini-3.5-transcribe",
+    store: false,
+    input: [{ type: "audio", mime_type: "audio/wav", data: Buffer.from(audio).toString("base64") }],
+    generation_config: {
+      transcription_config: {
+        mode: options.speechGeminiMode ?? "verbatim",
+        ...(locale ? { language_codes: [`${locale.language}-${locale.region}`] } : {}),
+        custom_vocabulary: speechRecognitionWords(
+          options.speechHints,
+          options.speechCustomWords.map(({ term }) => term),
+        ),
+      },
+    },
+  });
+}
+
 export class CloudSpeech extends Context.Service<
   CloudSpeech,
   {
@@ -133,10 +170,11 @@ export const layer = Layer.effect(
       Effect.map((value) => value.cloudSpeechCredentials),
     );
     const configured = credentials.pipe(
-      Effect.map(({ openai, xai, openrouter }) => ({
+      Effect.map(({ openai, xai, openrouter, gemini }) => ({
         openai: Boolean(openai),
         xai: Boolean(xai),
         openrouter: Boolean(openrouter),
+        gemini: Boolean(gemini),
       })),
     );
     const execute = (request: HttpClientRequest.HttpClientRequest) =>
@@ -211,12 +249,19 @@ export const layer = Layer.effect(
         );
         if (!isApiKey(key)) return yield* unreadable();
         const audio = wave(samples);
-        const request = HttpClientRequest.post(endpoints[provider].url).pipe(
-          HttpClientRequest.bearerToken(Redacted.make(key)),
-          provider === "openrouter"
-            ? openRouterBody(model!, audio, language)
-            : audioBody(provider, audio, language, options),
-        );
+        const endpoint = HttpClientRequest.post(endpoints[provider].url);
+        const request =
+          provider === "gemini"
+            ? endpoint.pipe(
+                HttpClientRequest.setHeader("x-goog-api-key", key),
+                geminiBody(audio, language, options),
+              )
+            : endpoint.pipe(
+                HttpClientRequest.bearerToken(Redacted.make(key)),
+                provider === "openrouter"
+                  ? openRouterBody(model!, audio, language)
+                  : audioBody(provider, audio, language, options),
+              );
         const unavailable = () => new CloudSpeechError({ provider, reason: "unavailable" });
         // A catalog fetch or vault lookup may have outlived the credential it started with.
         const current = (yield* credentials)[provider];
@@ -225,7 +270,12 @@ export const layer = Layer.effect(
             provider,
             reason: current ? "key-changed" : "missing-key",
           });
-        const response = yield* execute(request).pipe(Effect.mapError(unavailable));
+        const send = execute(request);
+        const response = yield* (
+          provider === "gemini"
+            ? send.pipe(Effect.provideService(HttpClient.TracerDisabledWhen, () => true))
+            : send
+        ).pipe(Effect.mapError(unavailable));
         if (response.status < 200 || response.status >= 300)
           return yield* new CloudSpeechError({
             provider,
@@ -238,6 +288,20 @@ export const layer = Layer.effect(
                     ? "model-unavailable"
                     : "unavailable",
           });
+        if (provider === "gemini") {
+          const { steps } = yield* HttpClientResponse.schemaBodyJson(GeminiTranscript)(
+            response,
+          ).pipe(Effect.mapError(unavailable));
+          const text = steps.flatMap(({ type, content }) =>
+            type === "model_output"
+              ? (content ?? []).flatMap((part) =>
+                  part.type === "text" && part.text !== undefined ? [part.text] : [],
+                )
+              : [],
+          );
+          if (text.length === 0) return yield* unavailable();
+          return applySpeechAliases(text.join(""), options.speechCustomWords).trim();
+        }
         const { text } = yield* HttpClientResponse.schemaBodyJson(
           EnvironmentSpeechTranscriptionResult,
         )(response).pipe(Effect.mapError(unavailable));
