@@ -1,0 +1,197 @@
+name: Fork nightly (Linux x64)
+
+on:
+  schedule:
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: pingdotgg/t3code
+  FIRST_PUBLISHED_AT: "2026-11-23T02:49:26Z"
+  NIGHTLY_PATTERN: '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
+
+jobs:
+  discover:
+    if: github.repository == 'vibhor1102/t3code'
+    runs-on: ubuntu-24.04
+    outputs:
+      tags: ${{ steps.releases.outputs.tags }}
+    steps:
+      - name: Find unpublished upstream nightlies
+        id: releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -s '[.[][] | select(.prerelease and (.draft | not)) | .tag_name]' > "$RUNNER_TEMP/published.json"
+
+          # Walk back to the first mirrored nightly so a missed run does not skip a release.
+          for ((page = 1; ; page++)); do
+            releases=$(gh api "repos/$UPSTREAM_REPO/releases?per_page=100&page=$page")
+            jq -c --arg pattern "$NIGHTLY_PATTERN" --arg since "$FIRST_PUBLISHED_AT" '
+              .[] | select(.prerelease and (.draft | not) and (.tag_name | test($pattern))
+                and .published_at >= $since) | {tag: .tag_name, published: .published_at}
+            ' <<< "$releases"
+            if jq -e --arg pattern "$NIGHTLY_PATTERN" --arg since "$FIRST_PUBLISHED_AT" '
+              length == 0 or any(.[]; .prerelease and (.tag_name | test($pattern)) and .published_at < $since)
+            ' <<< "$releases" > /dev/null; then
+              break
+            fi
+          done | jq -cs --slurpfile published "$RUNNER_TEMP/published.json" '
+            map(select(.tag as $tag | $published[0] | index($tag) | not))
+            | unique_by(.tag) | sort_by(.published) | reverse | .[:12] | map(.tag)
+          ' > "$RUNNER_TEMP/tags.json"
+          echo "tags=$(cat "$RUNNER_TEMP/tags.json")" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.tag }}
+    needs: discover
+    if: needs.discover.outputs.tags != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        tag: ${{ fromJSON(needs.discover.outputs.tags) }}
+    env:
+      RELEASE_TAG: ${{ matrix.tag }}
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+      T3CODE_TELEMETRY_CHANNEL: dev
+    steps:
+      - name: Check out the upstream release tag
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ $NIGHTLY_PATTERN ]]
+          git init .
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch --no-tags --depth=1 upstream "refs/tags/$RELEASE_TAG"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+          # Read only the public Connect configuration documented for source builds.
+          sed -nE '/^T3CODE_(CLERK_PUBLISHABLE_KEY|CLERK_JWT_TEMPLATE|CLERK_CLI_OAUTH_CLIENT_ID|RELAY_URL)=/p' \
+            .env.example >> "$GITHUB_ENV"
+
+      - name: Set up workspace dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Linux build and smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config libgtk-3-0t64 libnss3 libasound2t64 libgbm1 imagemagick xvfb python3-yaml
+
+      - name: Package the AppImage
+        run: vp run dist:desktop:linux --build-version "${RELEASE_TAG#v}" --verbose
+
+      - name: Smoke-test the AppImage and verify its update feed
+        run: |
+          set -euo pipefail
+          image=$(realpath release/T3-Code-Nightly-x86_64.AppImage)
+          smoke_dir=$(mktemp -d "$RUNNER_TEMP/t3-nightly.XXXXXXXX")
+          chmod +x "$image"
+          (cd "$smoke_dir" && "$image" --appimage-extract >/dev/null)
+          grep -Fx "owner: ${GITHUB_REPOSITORY%/*}" "$smoke_dir/squashfs-root/resources/app-update.yml"
+          grep -Fx "repo: ${GITHUB_REPOSITORY#*/}" "$smoke_dir/squashfs-root/resources/app-update.yml"
+          xvfb-run -a node scripts/smoke-desktop-app.ts --executable "$smoke_dir/squashfs-root/t3code" \
+            --artifacts-dir "$smoke_dir/logs"
+
+          # Upstream packages a .deb alongside the AppImage. Only advertise the asset we ship.
+          /usr/bin/python3 - "$image" <<'PY'
+          import base64
+          import hashlib
+          import os
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          image = Path(sys.argv[1])
+          manifest = Path("release/nightly-linux.yml")
+          data = yaml.safe_load(manifest.read_text())
+          entry, = (file for file in data["files"] if file["url"] == image.name)
+          with image.open("rb") as stream:
+              digest = base64.b64encode(hashlib.file_digest(stream, "sha512").digest()).decode()
+          if (data["version"], entry["size"], entry["sha512"]) != (
+              os.environ["RELEASE_TAG"][1:], image.stat().st_size, digest
+          ):
+              raise SystemExit("AppImage metadata does not match the packaged build")
+          data.update(files=[entry], path=image.name, sha512=digest)
+          manifest.write_text(yaml.safe_dump(data, sort_keys=False))
+          PY
+
+      - name: Publish the AppImage and the original upstream notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$UPSTREAM_REPO/releases/tags/$RELEASE_TAG" > "$RUNNER_TEMP/upstream-release.json"
+          jq -je 'select(.prerelease and (.draft | not)) | .body' "$RUNNER_TEMP/upstream-release.json" \
+            > "$RUNNER_TEMP/notes.md"
+          title=$(jq -er '.name' "$RUNNER_TEMP/upstream-release.json")
+
+          # A cancelled upload can leave a draft. Retry that draft, but never replace a published build.
+          if release=$(gh release view "$RELEASE_TAG" --json isDraft); then
+            if [[ $(jq -r '.isDraft' <<< "$release") != true ]]; then
+              exit 0
+            fi
+          else
+            git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push \
+              "https://github.com/$GH_REPO.git" "HEAD:refs/tags/$RELEASE_TAG"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --latest=false \
+              --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          gh release upload "$RELEASE_TAG" release/T3-Code-Nightly-x86_64.AppImage release/nightly-linux.yml --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+
+  feed:
+    name: Refresh the nightly update pointer
+    needs: [discover, build]
+    if: ${{ !cancelled() && needs.discover.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Point the updater at the highest published nightly version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" |
+            jq -s --arg pattern "$NIGHTLY_PATTERN" '
+              [.[][] | select(.prerelease and (.draft | not) and (.tag_name | test($pattern))
+                and (.assets | any(.name == "nightly-linux.yml"))
+                and (.assets | any(.name == "T3-Code-Nightly-x86_64.AppImage")))]
+              | sort_by(.tag_name | [scan("[0-9]+") | tonumber])
+              | last | if . then {tag_name, name, body} else empty end
+            ' > nightly.json
+          [[ -s nightly.json ]] || exit 0
+          if ! gh release view update-feed >/dev/null 2>&1; then
+            gh release create update-feed --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "Nightly update feed" --notes "Used by the fork AppImage updater."
+          fi
+          if gh release download update-feed --pattern nightly.json --output previous.json &&
+            cmp -s previous.json nightly.json; then
+            exit 0
+          fi
+          gh release upload update-feed nightly.json --clobber
