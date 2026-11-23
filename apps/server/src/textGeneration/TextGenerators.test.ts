@@ -87,6 +87,42 @@ it.effect.each([
   }),
 );
 
+it.effect("accepts plain text from a transcript cleanup API without changing its prompt", () =>
+  Effect.gen(function* () {
+    const prompt = "Clean this transcript. Return only the cleaned transcript.";
+    const upstream = vi.fn<typeof fetch>(async (_url, init) => {
+      expect(JSON.parse(String(init?.body)).messages).toEqual([{ role: "user", content: prompt }]);
+      return Response.json({
+        choices: [{ finish_reason: "stop", message: { content: "Use its existing mechanisms." } }],
+      });
+    });
+    const generators = yield* TextGenerators.TextGenerators.pipe(Effect.provide(layer({})));
+    const run = yield* generators.runner(ID);
+    const cleanup = {
+      ...request,
+      operation: "generateTranscriptionPostProcessing",
+      outputSchema: Schema.Struct({ transcription: Schema.String }),
+      prompt,
+    } as const;
+
+    expect(
+      yield* run!(cleanup).pipe(Effect.provideService(FetchHttpClient.Fetch, upstream)),
+    ).toEqual({
+      transcription: "Use its existing mechanisms.",
+    });
+    upstream.mockResolvedValueOnce(
+      Response.json({
+        choices: [{ finish_reason: "stop", message: { content: '{"transcription":"Keep it."}' } }],
+      }),
+    );
+    expect(
+      yield* run!(cleanup).pipe(Effect.provideService(FetchHttpClient.Fetch, upstream)),
+    ).toEqual({
+      transcription: "Keep it.",
+    });
+  }),
+);
+
 it.effect("a turned-off text generator fails instead of calling its API", () =>
   Effect.gen(function* () {
     const upstream = vi.fn<typeof fetch>();
