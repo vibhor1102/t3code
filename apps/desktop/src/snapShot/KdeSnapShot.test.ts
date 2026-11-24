@@ -78,15 +78,20 @@ it("does not mistake installed files for KDE authorization, or fall back to a pi
   expect(execute.mock.calls.some(([, args]) => args[0] === "capture")).toBe(false);
 });
 
-it("detects a bundled update, updates explicitly, and removes only capture's registration", async () => {
+it("refreshes an installed helper on capture and removes only its own registration", async () => {
   await setup.perform("install-kde-helper");
   const unrelated = NodePath.join(paths.dataHome, "applications", "another-app.desktop");
   await NodeFSP.writeFile(unrelated, "keep me");
   await NodeFSP.writeFile(paths.bundle, "updated helper");
   expect((await setup.state()).status).toBe("update-required");
-  await setup.perform("install-kde-helper");
+  const capture = await captureKdeWindow(paths);
+  expect(capture.png).toEqual(png);
+  capture.feedback?.close();
+  expect(await NodeFSP.readFile(kdeCapturePaths(paths).executable, "utf8")).toBe("updated helper");
   expect((await setup.state()).status).toBe("ready");
   await setup.perform("remove-kde-helper");
+  expect((await setup.state()).status).toBe("not-installed");
+  await expect(captureKdeWindow(paths)).rejects.toThrow("Settings → SnapShots");
   expect((await setup.state()).status).toBe("not-installed");
   expect(await NodeFSP.readFile(unrelated, "utf8")).toBe("keep me");
 });
@@ -131,8 +136,13 @@ it("refuses symlink destinations and unrelated desktop entries", async () => {
   await NodeFSP.mkdir(NodePath.dirname(desktop), { recursive: true });
   await NodeFSP.writeFile(desktop, "[Desktop Entry]\nName=Unrelated");
   await expect(setup.perform("install-kde-helper")).rejects.toThrow("Another desktop entry");
-  await NodeFSP.unlink(desktop);
   await NodeFSP.mkdir(NodePath.dirname(executable), { recursive: true });
+  await NodeFSP.writeFile(executable, "unrelated executable");
+  await expect(captureKdeWindow(paths)).rejects.toThrow("Settings → SnapShots");
+  expect(await NodeFSP.readFile(desktop, "utf8")).toBe("[Desktop Entry]\nName=Unrelated");
+  expect(await NodeFSP.readFile(executable, "utf8")).toBe("unrelated executable");
+  await NodeFSP.unlink(executable);
+  await NodeFSP.unlink(desktop);
   await NodeFSP.symlink(paths.bundle, executable);
   await expect(setup.perform("install-kde-helper")).rejects.toThrow("regular files");
   expect(await NodeFSP.readFile(paths.bundle, "utf8")).toBe("bundled executable");

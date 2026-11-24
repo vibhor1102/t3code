@@ -214,7 +214,15 @@ export async function captureKdeWindow(
   paths: KdeCapturePaths,
   options?: { readonly flash: boolean; readonly animate: boolean },
 ): Promise<LinuxWindowSnapshot> {
-  const state = await new KdeCaptureSetup(paths).state();
+  const setup = new KdeCaptureSetup(paths);
+  let state = await setup.state();
+  if (state.status === "update-required") {
+    const { message } = state;
+    await setup.perform("install-kde-helper").catch((cause: unknown) => {
+      throw new CaptureSetupRequiredError({ state: message, cause });
+    });
+    state = await setup.state();
+  }
   if (state.status !== "ready") throw new CaptureSetupRequiredError({ state: state.message });
   const { executable } = kdeCapturePaths(paths);
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-kde-capture-"));

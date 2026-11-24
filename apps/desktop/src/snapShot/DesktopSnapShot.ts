@@ -135,6 +135,8 @@ const DesktopSnapShotOperation = Schema.Literals([
   "capture",
 ]);
 
+const CAPTURE_SETUP_REQUIRED_MESSAGE = "Finish SnapShot setup in Settings → SnapShots.";
+
 export class DesktopSnapShotError extends Schema.TaggedError<DesktopSnapShotError>()(
   "DesktopSnapShotError",
   {
@@ -160,7 +162,7 @@ export class DesktopSnapShotError extends Schema.TaggedError<DesktopSnapShotErro
       case "window-unavailable":
         return "The active window is not available for capture.";
       case "setup-required":
-        return "Finish SnapShot setup in Settings → SnapShots.";
+        return CAPTURE_SETUP_REQUIRED_MESSAGE;
       case "capture":
         return "Could not capture the active window.";
     }
@@ -1454,7 +1456,7 @@ export const make = Effect.gen(function* () {
             reason: "setup-failed",
             cause: error,
           }),
-      });
+      }).pipe(snapshotMutex.withPermits(1));
     } else if (action === "install-hyprland-helper" || action === "remove-hyprland-helper") {
       if (captureMode(environment.platform) !== "portal" || !isHyprlandCaptureSession())
         return yield* new DesktopSnapShotSetupError({
@@ -1708,6 +1710,10 @@ export const make = Effect.gen(function* () {
             ...(kdeHelper
               ? {
                   kdeHelper,
+                  message:
+                    kdeHelper.status === "ready" && state.message === CAPTURE_SETUP_REQUIRED_MESSAGE
+                      ? null
+                      : state.message,
                   linuxFeedbackAvailable:
                     kdeHelper.status === "ready" && kdeHelper.feedbackAvailable === true,
                 }
