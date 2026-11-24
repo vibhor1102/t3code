@@ -427,6 +427,7 @@ import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopSnapShot from "./DesktopSnapShot.ts";
 import * as SnapShotAccessibility from "./SnapShotAccessibility.ts";
+import { KdeCaptureSetup } from "./KdeSnapShot.ts";
 import { CaptureSetupRequiredError } from "./linuxCaptureSession.ts";
 
 const accessibilityApp = {
@@ -1887,6 +1888,38 @@ it.effect("points capture setup failures at SnapShot settings", () => {
     Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())),
   );
 });
+
+it.effect("clears an old capture setup error when KDE access recovers", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      vi.stubEnv("XDG_SESSION_TYPE", "wayland");
+      yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+      linuxBackendMock
+        .mockResolvedValueOnce("kde")
+        .mockResolvedValueOnce("kde")
+        .mockResolvedValueOnce("kde");
+      using helperState = vi.spyOn(KdeCaptureSetup.prototype, "state");
+      helperState.mockResolvedValue({ status: "ready", message: "Ready" });
+      helperState.mockResolvedValueOnce({
+        status: "update-required",
+        message: "Update the helper.",
+      });
+      linuxCaptureMock.mockRejectedValueOnce(
+        new CaptureSetupRequiredError({ state: "Update the helper." }),
+      );
+
+      const service = yield* DesktopSnapShot.make;
+      yield* service.configure(enabledSettings());
+      const failure = yield* Effect.flip(service.capture);
+      assert.equal((yield* service.state).message, failure.message);
+      assert.isNull((yield* service.state).message);
+
+      linuxCaptureMock.mockRejectedValueOnce(new Error("Capture failed"));
+      const captureFailure = yield* Effect.flip(service.capture);
+      assert.equal((yield* service.state).message, captureFailure.message);
+    }),
+  ).pipe(Effect.provide(layerTest("linux", { makeDirectory: () => Effect.void }))),
+);
 
 it.effect(
   "keeps saved preferences but rechecks access and shortcut delivery after changing desktops",
