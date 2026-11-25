@@ -85,9 +85,11 @@ jobs:
           if [[ "$RELEASE_TAG" == "$GEMINI_BOOTSTRAP_TAG" ]]; then
             source_tag="$GEMINI_BOOTSTRAP_SOURCE"
           fi
-          git fetch --no-tags --depth=1 upstream "refs/tags/$source_tag"
+          # Give the fork fetch a common base so it only needs objects added by the patch stack.
+          git fetch --no-tags --depth=1 upstream \
+            "refs/tags/$source_tag:refs/tags/$source_tag" "$FORK_PATCH_BASE:refs/fork/patch-base"
           git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git checkout --detach FETCH_HEAD
+          git checkout --detach "refs/tags/$source_tag"
           {
             echo "UPSTREAM_TAG=$source_tag"
             echo "UPSTREAM_COMMIT=$(git rev-parse HEAD)"
@@ -100,9 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           git remote add fork "https://github.com/$GITHUB_REPOSITORY.git"
-          git config remote.fork.promisor true
-          git config remote.fork.partialCloneFilter blob:none
-          git fetch --no-tags --filter=blob:none fork "refs/heads/$FORK_PATCH_BRANCH"
+          # Cherry-pick can request locally merged blobs from a promisor remote on a partial fetch.
+          git fetch --no-tags fork "refs/heads/$FORK_PATCH_BRANCH"
           patch_head=$(git rev-parse FETCH_HEAD)
           git merge-base --is-ancestor "$FORK_PATCH_BASE" "$patch_head"
           test -z "$(git rev-list --merges "$FORK_PATCH_BASE..$patch_head")"
