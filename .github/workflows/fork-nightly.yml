@@ -15,11 +15,8 @@ permissions:
 env:
   UPSTREAM_REPO: pingdotgg/t3code
   FIRST_PUBLISHED_AT: "2026-11-23T02:49:26Z"
-  FORK_PATCH_BRANCH: fork/patches
-  FORK_PATCH_BASE: 2808e878de91aacc7fb82887f18414976be7ae34
-  # Upstream ran 5126 without publishing a release. Use that slot for the Gemini cleanup fix.
-  GEMINI_BOOTSTRAP_SOURCE: v0.1.12-nightly.20261123.5124
-  GEMINI_BOOTSTRAP_TAG: v0.1.12-nightly.20261123.5126
+  FORK_PATCH_BRANCH: fork/patches-5305
+  FORK_PATCH_BASE: bc0f04da94f64b5e487c598761a43b4cf06b2ac9
   NIGHTLY_PATTERN: '^v[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}\.[0-9]+$'
 
 jobs:
@@ -50,9 +47,8 @@ jobs:
             ' <<< "$releases" > /dev/null; then
               break
             fi
-          done | jq -cs --slurpfile published "$RUNNER_TEMP/published.json" --arg bootstrap "$GEMINI_BOOTSTRAP_TAG" '
-            . + [{tag: $bootstrap, published: "2026-11-23T03:40:40Z"}]
-            | map(select(.tag as $tag | $published[0] | index($tag) | not))
+          done | jq -cs --slurpfile published "$RUNNER_TEMP/published.json" '
+            map(select(.tag as $tag | $published[0] | index($tag) | not))
             | unique_by(.tag) | sort_by(.published) | reverse | .[:12] | map(.tag)
           ' > "$RUNNER_TEMP/tags.json"
           echo "tags=$(cat "$RUNNER_TEMP/tags.json")" >> "$GITHUB_OUTPUT"
@@ -81,17 +77,13 @@ jobs:
           [[ "$RELEASE_TAG" =~ $NIGHTLY_PATTERN ]]
           git init .
           git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
-          source_tag="$RELEASE_TAG"
-          if [[ "$RELEASE_TAG" == "$GEMINI_BOOTSTRAP_TAG" ]]; then
-            source_tag="$GEMINI_BOOTSTRAP_SOURCE"
-          fi
           # Give the fork fetch a common base so it only needs objects added by the patch stack.
           git fetch --no-tags --depth=1 upstream \
-            "refs/tags/$source_tag:refs/tags/$source_tag" "$FORK_PATCH_BASE:refs/fork/patch-base"
+            "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG" "$FORK_PATCH_BASE:refs/fork/patch-base"
           git sparse-checkout set --no-cone '/*' '!/.repos/'
-          git checkout --detach "refs/tags/$source_tag"
+          git checkout --detach "refs/tags/$RELEASE_TAG"
           {
-            echo "UPSTREAM_TAG=$source_tag"
+            echo "UPSTREAM_TAG=$RELEASE_TAG"
             echo "UPSTREAM_COMMIT=$(git rev-parse HEAD)"
           } >> "$GITHUB_ENV"
           # Read only the public Connect configuration documented for source builds.
@@ -175,13 +167,8 @@ jobs:
           set -euo pipefail
           gh api "repos/$UPSTREAM_REPO/releases/tags/$UPSTREAM_TAG" > "$RUNNER_TEMP/upstream-release.json"
           title=$(jq -er '.name' "$RUNNER_TEMP/upstream-release.json")
-          if [[ "$RELEASE_TAG" == "$GEMINI_BOOTSTRAP_TAG" ]]; then
-            title="T3 Code Nightly ${RELEASE_TAG#v} · API transcript cleanup"
-            printf '%s\n\n' '- **API transcript cleanup.** T3 now accepts the plain text requested by its built-in cleanup prompt when you use an API text generator such as Gemini Flash-Lite.' \
-              > "$RUNNER_TEMP/notes.md"
-          fi
           jq -je 'select(.prerelease and (.draft | not)) | .body' "$RUNNER_TEMP/upstream-release.json" \
-            >> "$RUNNER_TEMP/notes.md"
+            > "$RUNNER_TEMP/notes.md"
 
           # A cancelled upload can leave a draft. Retry that draft, but never replace a published build.
           if release=$(gh release view "$RELEASE_TAG" --json isDraft); then
